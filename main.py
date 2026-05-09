@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-notes.py — real-time note display
-pip install numpy sounddevice
-ctrl-c to quit and save session
+notes.py — real-time note display (clean + styled + stable)
 """
 
-import sys, time, math, shutil, os, subprocess
+import sys, time, math, shutil, subprocess
 from pathlib import Path
 from datetime import datetime
 import numpy as np
 import sounddevice as sd
 from collections import deque
 
+# ── config ─────────────────────────────────────────────
 SAMPLE_RATE  = 44100
 BLOCK_SIZE   = 8192
 OVERLAP      = 2048
@@ -28,94 +27,30 @@ REPO_URL     = "https://github.com/riffifi/notesnotes.git"
 
 CHROMATIC = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
 
+# ── ANSI colors ────────────────────────────────────────
 R   = "\033[0m"
 B   = "\033[1m"
-DIM = "\033[2m"
+
 def fg(r,g,b): return f"\033[38;2;{r};{g};{b}m"
 
-CREAM  = fg(240, 235, 220)
-GOLD   = fg(212, 175, 100)
-MUTED  = fg(100,  95,  85)
-FAINT  = fg(58,   54,  46)
-FAINTER= fg(38,   35,  28,)
+GLOW  = fg(255, 210, 120)
+CREAM = fg(240, 235, 220)
+SOFT  = fg(180, 170, 150)
+DIM   = fg(120, 110, 100)
+FADE  = fg(70, 65, 60)
 
-def note_color(n):
-    return GOLD if '#' in n else CREAM
-
+# ── big ASCII letters ──────────────────────────────────
 BIG = {
-    'A': [
-        "  ▄▄▄  ",
-        " █   █ ",
-        " █   █ ",
-        " █████ ",
-        " █   █ ",
-        " █   █ ",
-        " █   █ ",
-        "       ",
-    ],
-    'B': [
-        " ████  ",
-        " █   █ ",
-        " █   █ ",
-        " ████  ",
-        " █   █ ",
-        " █   █ ",
-        " ████  ",
-        "       ",
-    ],
-    'C': [
-        "  ████ ",
-        " █     ",
-        " █     ",
-        " █     ",
-        " █     ",
-        " █     ",
-        "  ████ ",
-        "       ",
-    ],
-    'D': [
-        " ████  ",
-        " █   █ ",
-        " █   █ ",
-        " █   █ ",
-        " █   █ ",
-        " █   █ ",
-        " ████  ",
-        "       ",
-    ],
-    'E': [
-        " █████ ",
-        " █     ",
-        " █     ",
-        " ████  ",
-        " █     ",
-        " █     ",
-        " █████ ",
-        "       ",
-    ],
-    'F': [
-        " █████ ",
-        " █     ",
-        " █     ",
-        " ████  ",
-        " █     ",
-        " █     ",
-        " █     ",
-        "       ",
-    ],
-    'G': [
-        "  ████ ",
-        " █     ",
-        " █     ",
-        " █  ██ ",
-        " █   █ ",
-        " █   █ ",
-        "  ████ ",
-        "       ",
-    ],
+    'A': ["  ▄▄▄  "," █   █ "," █   █ "," █████ "," █   █ "," █   █ "," █   █ ","       "],
+    'B': [" ████  "," █   █ "," █   █ "," ████  "," █   █ "," █   █ "," ████  ","       "],
+    'C': ["  ████ "," █     "," █     "," █     "," █     "," █     ","  ████ ","       "],
+    'D': [" ████  "," █   █ "," █   █ "," █   █ "," █   █ "," █   █ "," ████  ","       "],
+    'E': [" █████ "," █     "," █     "," ████  "," █     "," █     "," █████ ","       "],
+    'F': [" █████ "," █     "," █     "," ████  "," █     "," █     "," █     ","       "],
+    'G': ["  ████ "," █     "," █     "," █  ██ "," █   █ "," █   █ ","  ████ ","       "],
 }
 
-SHARP_ART = [
+SHARP = [
     " ▗▖  ",
     " ███ ",
     " ▝▘  ",
@@ -126,58 +61,53 @@ SHARP_ART = [
     "     ",
 ]
 
-def build_chromatic():
-    t = {}
-    for midi in range(24, 109):
-        oct_ = midi // 12 - 1
-        name = CHROMATIC[midi % 12] + str(oct_)
-        freq = 440.0 * 2 ** ((midi - 69) / 12)
-        if MIN_FREQ <= freq <= MAX_FREQ:
-            t[name] = freq
-    return t
-
-NOTE_TABLE = build_chromatic()
-
+# ── note detection ─────────────────────────────────────
 def closest_note(freq):
     midi = round(12 * math.log2(freq / 440.0) + 69)
     return CHROMATIC[midi % 12] + str(midi // 12 - 1)
 
-def detect(signal):
-    rms = float(np.sqrt(np.mean(signal ** 2)))
+def detect(sig):
+    rms = float(np.sqrt(np.mean(sig**2)))
     if rms < RMS_THRESH:
-        return None, 0.0
-    w   = signal * np.hanning(len(signal))
-    n   = len(w)
+        return None, 0
+
+    w = sig * np.hanning(len(sig))
+    n = len(w)
+
     fft = np.fft.rfft(w, n=n*2)
     acf = np.fft.irfft(fft * np.conj(fft))[:n]
     acf /= (acf[0] + 1e-9)
-    lo  = int(SAMPLE_RATE / MAX_FREQ)
-    hi  = min(int(SAMPLE_RATE / MIN_FREQ), n-1)
+
+    lo = int(SAMPLE_RATE / MAX_FREQ)
+    hi = min(int(SAMPLE_RATE / MIN_FREQ), n-1)
+
     idx = np.argmax(acf[lo:hi])
     conf = float(acf[lo + idx])
     freq = SAMPLE_RATE / (lo + idx)
+
     return (freq if conf >= MIN_CONF else None), conf
 
+# ── state ──────────────────────────────────────────────
 ring        = np.zeros(BLOCK_SIZE, dtype=np.float32)
 freq_hist   = deque(maxlen=SMOOTH)
 live        = [None]
 history     = []
-last_logged = [None]
-stable_t    = [0.0]
-last_snap   = [None]
-last_nlines = [0]
 session_all = []
+last_note   = [None]
+stable_t    = [0.0]
 
+# ── audio callback ─────────────────────────────────────
 def callback(indata, frames, _t, _s):
     global ring
+
     chunk = indata[:,0]
-    ring  = np.roll(ring, -len(chunk))
+    ring = np.roll(ring, -len(chunk))
     ring[-len(chunk):] = chunk
 
-    freq, conf = detect(ring)
+    freq, _ = detect(ring)
     if freq is None:
         live[0] = None
-        stable_t[0] = 0.0
+        stable_t[0] = 0
         return
 
     freq_hist.append(freq)
@@ -188,113 +118,126 @@ def callback(indata, frames, _t, _s):
     live[0] = name
 
     now = time.time()
-    if name != last_logged[0]:
-        if stable_t[0] == 0.0:
-            stable_t[0] = now
-        elif now - stable_t[0] >= HOLD:
-            history.insert(0, name)
-            if len(history) > MAX_HIST:
-                history.pop()
-            session_all.append(name)
-            last_logged[0] = name
-            stable_t[0] = 0.0
-    else:
-        stable_t[0] = 0.0
 
+    if name != last_note[0]:
+        if stable_t[0] == 0:
+            stable_t[0] = now
+        elif now - stable_t[0] > HOLD:
+            history.insert(0, name)
+            history[:] = history[:MAX_HIST]
+            session_all.append(name)
+            last_note[0] = name
+            stable_t[0] = 0
+    else:
+        stable_t[0] = 0
+
+# ── terminal helpers ───────────────────────────────────
 def tw(): return shutil.get_terminal_size((80,24)).columns
 def th(): return shutil.get_terminal_size((80,24)).lines
 
-ART_ROWS = 8
-HIST_W   = 7
+def fade(i):
+    return 1.0 - abs(3.5 - i) / 6
 
+# ── render ─────────────────────────────────────────────
 def render():
     cols = tw()
     rows = th()
 
-    cur   = live[0]
-    note  = cur[:-1] if cur else None
-    oct_  = cur[-1] if cur else None
-    sharp = note and '#' in note if note else False
-    letter= note[0] if note else None
+    cur = live[0]
+    note = cur[:-1] if cur else None
+    letter = note[0] if note else None
+    sharp = note and "#" in note if note else False
+    octv = cur[-1] if cur else ""
 
-    letter_art = BIG.get(letter, [" " * 7] * ART_ROWS)
-    art_w      = len(letter_art[0])
-    sharp_w    = len(SHARP_ART[0]) if sharp else 0
-    big_w      = art_w + sharp_w + 2
+    art = BIG.get(letter, [" "]*8)
 
-    hist_col_w = HIST_W
+    hist_w = 7
     gap = 3
+    art_w = len(art[0])
 
-    content_w = hist_col_w + gap + big_w
-    lpad = max(0, (cols - content_w) // 2)
-    tpad = max(0, (rows - ART_ROWS) // 2)
+    total_w = hist_w + gap + art_w + 6
+    pad_x = max(0, (cols - total_w)//2)
+    pad_y = max(0, (rows - 8)//2)
 
-    lines = []
+    lines = [" " * cols for _ in range(pad_y)]
 
-    # top padding
-    for _ in range(tpad):
-        lines.append(" " * cols)
+    for i in range(8):
 
-    for i in range(ART_ROWS):
-        pad = " " * lpad
-
-        # history (fixed width, ANSI-safe padding)
+        # ── history (soft fade) ───────────────────
         if i < len(history):
-            hn = history[i][:-1]
-            col = note_color(hn)
+            h = history[i][:-1]
 
-            raw = f"{hn:<3}  "
-            hist_str = col + raw + R + (" " * (hist_col_w - len(raw)))
+            if i == 0:
+                col = GLOW + B
+            elif i == 1:
+                col = CREAM
+            elif i == 2:
+                col = SOFT
+            else:
+                col = FADE
+
+            hist = col + f"{h:<3}" + R
+            hist = hist.ljust(hist_w + len(col) + len(R))
         else:
-            hist_str = " " * hist_col_w
+            hist = " " * hist_w
 
-        sp = " " * gap
-
-        # big letter
-        if letter:
-            col = note_color(note)
-            big_part = col + B + letter_art[i] + R
-            shp_part = (MUTED + SHARP_ART[i] + R) if sharp else ""
+        # ── big letter glow gradient ──────────────
+        f = fade(i)
+        if f > 0.75:
+            col = GLOW + B
+        elif f > 0.55:
+            col = CREAM
         else:
-            big_part = " " * art_w
-            shp_part = ""
+            col = SOFT
 
-        if i == 3 and oct_:
-            o_part = MUTED + " " + oct_ + R
-        else:
-            o_part = ""
+        big = col + art[i] + R
+        sharp_part = (DIM + SHARP[i] + R) if sharp else ""
 
-        row = pad + hist_str + sp + big_part + shp_part + o_part
+        octo = (GLOW + B + " " + octv + R) if i == 3 and octv else ""
+
+        row = (
+            " " * pad_x +
+            hist +
+            " " * gap +
+            big +
+            sharp_part +
+            octo
+        )
+
         lines.append(row.ljust(cols))
 
     return "\n".join(lines)
 
 def draw(frame):
-    n = frame.count("\n") + 1
-    if last_nlines[0]:
-        sys.stdout.write(f"\033[{last_nlines[0]}A\033[J")
-    sys.stdout.write(frame)
+    sys.stdout.write("\033[H\033[J" + frame)
     sys.stdout.flush()
-    last_nlines[0] = n
 
+# ── git auto-fix (no upstream issues ever again) ──────
 def save_and_push():
     if not session_all:
         return
 
     SESSIONS_DIR.mkdir(exist_ok=True)
 
-    ts = datetime.now()
-    fname = ts.strftime("%Y-%m-%d_%H-%M-%S") + ".txt"
-    fpath = SESSIONS_DIR / fname
+    if not (SESSIONS_DIR / ".git").exists():
+        subprocess.run(["git", "init", "-b", "main"], cwd=SESSIONS_DIR)
 
-    fpath.write_text(" ".join(session_all))
+    subprocess.run(["git", "remote", "remove", "origin"], cwd=SESSIONS_DIR, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", REPO_URL], cwd=SESSIONS_DIR)
 
-    subprocess.run(["git", "add", fname], cwd=SESSIONS_DIR)
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    f = SESSIONS_DIR / f"{ts}.txt"
+    f.write_text(" ".join(session_all))
+
+    subprocess.run(["git", "add", "."], cwd=SESSIONS_DIR)
     subprocess.run(["git", "commit", "-m", "session"], cwd=SESSIONS_DIR)
-    subprocess.run(["git", "push", "--force"], cwd=SESSIONS_DIR)
 
+    subprocess.run(["git", "branch", "-M", "main"], cwd=SESSIONS_DIR)
+    subprocess.run(["git", "push", "-u", "origin", "main"], cwd=SESSIONS_DIR)
+
+# ── main loop ──────────────────────────────────────────
 def main():
-    sys.stdout.write("\033[2J\033[H\033[?25l")
+    sys.stdout.write("\033[?25l")
     try:
         with sd.InputStream(
             samplerate=SAMPLE_RATE,
